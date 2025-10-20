@@ -1,0 +1,6 @@
+esptool
+machine
+network
+urequests
+# mip             # micropython installs packages ⚠ Problem building cffi?
+mpremote
