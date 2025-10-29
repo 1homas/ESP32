@@ -12,7 +12,7 @@ Loads WiFi settings from a `.env` file:
 
     # Network Settings
     COUNTRY_CODE=US
-    HOST=esp32-c6-micropython
+    HOSTNAME=esp32-c6-micropython
     # WLAN Settings
     MAC=01:23:45:67:89:ab
     SSID=your_ssid_name
@@ -214,8 +214,8 @@ if __name__ == "__main__":
     if env.get('COUNTRY_CODE', None):
         network.country(env.get('COUNTRY_CODE'))
         print(f"{network.country()=}")  # default: 'XX'
-    if env.get('HOST', None):
-        network.hostname(env.get('HOST'))
+    if env.get('HOSTNAME', None):
+        network.hostname(env.get('HOSTNAME'))
         print(f"{network.hostname()=}")
 
     # MAC Settings

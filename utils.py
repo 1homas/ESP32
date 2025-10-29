@@ -42,17 +42,10 @@ def load_dotenv(filename=".env", env: dict = {}):
     return env
 
 
-# Customize network settings
-env = load_dotenv()
-if env.get('COUNTRY_CODE', None):
-    network.country(env.get('COUNTRY_CODE'))
-if env.get('HOST', None):
-
 # Customize hostname
-network.hostname(env.get('HOST', 'mpy-esp32c6')) # default: 'mpy-esp32c6'
+network.hostname(env.get('HOSTNAME', 'mpy-esp32c6')) # default: 'mpy-esp32c6'
 
 # Customize MAC address
-# This successfulls set the MAC Customize MAC address
 if env.get('MAC', None):
     wlan.config(mac=bytes.fromhex(env.get('MAC')))
     print(f"{wlan.config('mac').hex()=}")
@@ -63,24 +56,6 @@ print(f"mac_str: ",mac_str.encode('utf-8'))  # Return the string encoded to byte
 print(f"back to bytes: ",wlan.config('mac').hex().encode('utf-8'))  # Return the string encoded to bytes
 
 # WLAN info
-print(f"{wlan.config('mac')=}")  # Get MAC address (returns bytes)
-print(f"{wlan.config('mac').hex()=}")
+print(f"{wlan.config('mac')=}")  # Get MAC address, in bytes
+print(f"{wlan.config('mac').hex()=}") # Get MAC address, as hex string
 print(f"{wlan.config('channel')=}") # must query only one param
-
-# Introspection
-
-print(f"{dir()=}")  # available objects
-print(f"{help('modules')=}")
-# print(f"bluetooth:\n{dir(bluetooth)}")
-
-print(f"{help(network)=}")
-
-print(f"{dir(network)=}")
-methods = [f for f in dir(network) if callable(getattr(network, f))]  # Get all defined functions in the class
-print(f"methods: {methods}")
-[print(f"{el}") for el in methods]
-
-attrs = [attr for attr in dir(network) if not callable(getattr(network, attr))]
-print(f"attrs: {attrs}")
-
-[print(f"{attr}: {getattr(network, attr)}") for attr in attrs]
