@@ -1,235 +1,173 @@
 """
-Connects ESP32C6 to WiFi using network settings in a `.env` file.
+WiFi connection helpers and `.env` loading, shared by `boot.py` and `main.py`.
 
-File layout:
+`load_dotenv()` and `mac_format()` are pure (no hardware import) and covered by
+`test_wifi_connect.py` on desktop. `wlan_mac()` and `connect()` touch a live
+`network.WLAN` object and are only validated on-device.
 
-    .
-    ├── .env
-    ├── boot.py
-    └── main.py
-
-Loads WiFi settings from a `.env` file:
-
-    # Network Settings
+.env format:
     COUNTRY_CODE=US
     HOSTNAME=esp32-c6-micropython
-    # WLAN Settings
     MAC=01:23:45:67:89:ab
     SSID=your_ssid_name
     IPSK=pre_shared_key
-
-Copy to `boot.py` on the ESP32 for automatic WiFi connection upon boot.
-  mpremote cp .env :.env
-  mpremote cp wifi_connect.py :boot.py
-
 """
 __license__ = "MIT - https://mit-license.org/"
 
-import machine
-import network
-import ntptime
 import time
 
-ESP32C6_USER_LED_PIN = 15
-MAX_RETRIES = 30  # Connect retries
-TIMEOUT = 500  # WLAN connect timeout, in milliseconds
+ATTEMPT_TIMEOUT_MS = 15_000  # how long to poll before giving up on one attempt
+POLL_MS = 500  # how often to check isconnected()
 
 
-def blink(cycles: int = 20, hold: int = 1000):
+def load_dotenv(filename: str = ".env") -> dict:
     """
-    Blink the ESP32C6_USER_LED_PIN.
-    Args:
-        cycles (int): number of cycles
-        hold (int): time, in milliseconds, to hold LED on and off
-    """
-    led = machine.Signal(machine.Pin(ESP32C6_USER_LED_PIN, machine.Pin.OUT), invert=True)
-    for n in range(0, cycles):
-        led.on()
-        print(f"🟡", end='')
-        time.sleep_ms(hold)
-        led.off()
-        print(f"⚫", end='')
-        time.sleep_ms(hold)
-    print() # newline
-
-def load_dotenv(filename: str = ".env", env: dict = {}):
-    """
-    Read environment variables from a `.env` file and return a `dict`.
     Args:
         filename (str): the name of the environment data file
-        env (dict): an optional dict to append/overwrite
     Returns:
-        dict: the dict of environment variables
+        dict: parsed KEY=VALUE pairs from the file (empty if the file is missing)
     """
-    env['env_filename'] = filename
+    env = {}
     try:
         with open(filename) as f:
             for line in f:
-                if line.strip() and not line.startswith("#"):
-                    key, value = line.strip().split("=", 1)
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    key, value = line.split("=", 1)
                     env[key] = value
-        print(f"Loaded .env: {list(env.keys())}")
     except OSError:
-        print(f"No env file")
+        print(f"No {filename} found")
     return env
 
 
-def wlan_mac(wlan, mac: str = None):
+def mac_format(mac: str, separator: str = ':') -> str:
     """
     Args:
-        wlan (network.WLAN) : the WLAN interface
-        mac (str) : MAC address, may be delimited or not
+        mac (str): MAC address, delimited or not
+        separator (str): separator to insert between byte pairs
     Returns:
-        wlan: the WLAN interface
+        str: the normalized, re-delimited MAC address
     """
-    if not isinstance(mac, str):
-        raise TypeError(f"mac is not a string")
-    # normalize
     mac = ''.join(c for c in mac if c in '0123456789abcdefABCDEF').upper()
     if len(mac) != 12:
         raise ValueError(f"Invalid MAC: {mac}")
-    print(f"MAC {mac} in bytes {bytes.fromhex(mac)}")
-    wlan.config(mac=bytes.fromhex(mac))  # set new MAC address in bytes
+    return separator.join(mac[i:i + 2] for i in range(0, 12, 2))
+
+
+def wlan_mac(wlan, mac: str):
+    """
+    Args:
+        wlan (network.WLAN): the WLAN interface
+        mac (str): MAC address, delimited or not
+    Returns:
+        network.WLAN: the same interface, for chaining
+    """
+    wlan.config(mac=bytes.fromhex(mac_format(mac, separator='')))
     return wlan
 
 
-def mac_format(mac: str = None, separator: str = ':', digits: int = 2):
+def signal_connected() -> None:
     """
-    Formats a MAC address with the specified separator
-    Args:
-        mac (str) : MAC address, may be delimited or not
-        separator (str) : the separator (default: ':'), must be one of ['',':','.','-']
-        digits : number of hex digits between separators, 2 (default) or 4
-    Returns:
-        wlan: the WLAN interface
-    """
-    if not isinstance(mac, str):
-        raise ValueError(f"Invalid MAC string: {mac}")
-    if not isinstance(digits, int) and digits not in [2, 4]:
-        raise ValueError(f"Invalid number of digits: {digits}")
-    if separator != '' and separator not in ':.-':
-        raise ValueError(f"Separator must be '' or [:.-]: {separator}")
-    # normalize
-    mac = ''.join(c for c in mac if c in '0123456789abcdefABCDEF').upper()
-    if len(mac) != 12:
-        raise ValueError(f"Invalid MAC: {mac}")
-    return separator.join(f"{mac[i:i+digits]}" for i in range(0, 12, digits))
-
-
-def wlan_connect(wlan: network.WLAN = None, ssid: str = None, ipsk: str = None):
-    """
-    Connects the ESP32-C6 to a WiFi network.
-    Args:
-        wlan (network.WLAN) : the WLAN interface
-        ssid (str) : security set identifier
-        ipsk (str) : [identity] pre-shared key
-    Returns:
-        bool: True for success, False otherwise.
-    """
-    if wlan is None:
-        wlan = network.WLAN(network.wlan)  # default: station interface
-    wlan.active(True)  # Activate the interface
-
-    if not wlan.isconnected():
-        print(f"Connecting to {ssid} WiFi network ...")
-        wlan.connect(ssid, ipsk)  # Connect to the network using SSID and PSK
-
-        # Wait for MAX_RETRIES * TIMEOUT to connect
-        attempts = 0
-        while not wlan.isconnected() and attempts < MAX_RETRIES:
-            print(f".", end="")
-            time.sleep_ms(TIMEOUT)
-            attempts += 1
-
-        if wlan.isconnected():
-            print(
-                f"WiFi {wlan.config('mac').hex()} connected @ {wlan.ifconfig()}")
-            return True
-        else:
-            print(f"WiFi Failed to connect: {NETWORK_STATUS[wlan.status()]}")
-            return False
-    else:
-        print(
-            f"WiFi {wlan.config('mac').hex()} already connected @ {wlan.ifconfig()}")
-        return True
-
-
-def wifi_connect(wlan: network.WLAN = None, ssid: str = None, ipsk: str = None):
-    """
-    Connects the ESP32-C6 to a WiFi network.
-    Args:
-        wlan (network.WLAN) : the WLAN interface
-        ssid (str) : security set identifier
-        ipsk (str) : [identity] pre-shared key
-    Returns:
-        bool: True for success, False otherwise.
-    """
-    if wlan is None:
-        wlan = network.WLAN(network.STA_IF)  # default: station interface
-    wlan.active(True)  # Activate the interface
-
-    if not wlan.isconnected():
-        print(f"Connecting to WiFi network: {ssid}...")
-        wlan.connect(ssid, ipsk)  # Connect to the network using SSID and PSK
-
-        # Wait for MAX_RETRIES * TIMEOUT to connect
-        attempts = 0
-        while not wlan.isconnected() and attempts < MAX_RETRIES:
-            print(f".", end="")
-            time.sleep_ms(TIMEOUT)
-            attempts += 1
-
-        if wlan.isconnected():
-            print(f"WiFi {wlan.config('mac').hex()} connected @ {wlan.ifconfig()}")
-            return True
-        else:
-            print(f"WiFi Failed to connect: {NETWORK_STATUS[wlan.status()]}")
-            return False
-    else:
-        print(f"WiFi {wlan.config('mac').hex()} already connected @ {wlan.ifconfig()}")
-        return True
-
-
-def ntp_sync():
-    """
-    Synchronize the RTC clock with an NTP server.
+    Blinks the onboard status LED (see status_led.py) to signal a successful
+    WiFi connection. Boards with no such LED simply don't have
+    status_led.py copied onto them, so the ImportError here is the normal
+    "no status LED on this board" case.
     """
     try:
-        ntptime.host = 'pool.ntp.org'  # default
-        ntptime.settime()
-        print('Clock synced')
-        rtc = machine.RTC()
-        yyyy, mm, dd, wd, hh, mm, ss, ms = rtc.datetime()
-        print(
-            f'Current time: {yyyy}-{mm:02d}-{dd:02d} {hh:02d}:{mm:02d}:{ss:02d}.{ms:03d} UTC')
-    except OSError:
-        print('Clock sync Failed')
+        from status_led import blink
+    except ImportError:
+        return
+    blink()
 
 
-if __name__ == "__main__":
+def boot_connect(display, show_status):
+    """
+    Loads `.env`, brings up WiFi, connects, and logs any exception to
+    crash.log — called from `boot.py` only after `init_display()` has
+    already run, and kept in this separate module rather than written
+    inline in boot.py itself. Confirmed on-device: MicroPython compiles a
+    whole .py file's bytecode upfront before executing any of it, so this
+    logic (plus the `sys` import and try/except needed to log crashes)
+    written out inline in boot.py still costs heap *before*
+    `init_display()` runs there, and reliably blows its ~110KB framebuffer
+    allocation on a real power-on boot. Keeping it in this module, imported
+    by boot.py only after init_display() succeeds, means that cost lands
+    after the display is already allocated.
+    Args:
+        display: the display object from init_display(), or None if display
+            init failed (e.g. MemoryError) — WiFi still comes up either way
+        show_status: display.show_status, passed in rather than imported
+            here to avoid importing display.py a second time; ignored if
+            display is None
+    Returns:
+        tuple: (wlan, env, mac, connected)
+    """
+    import sys
 
-    env = load_dotenv()
+    try:
+        import network
 
-    # Network Settings
-    if env.get('COUNTRY_CODE', None):
-        network.country(env.get('COUNTRY_CODE'))
-        print(f"{network.country()=}")  # default: 'XX'
-    if env.get('HOSTNAME', None):
-        network.hostname(env.get('HOSTNAME'))
-        print(f"{network.hostname()=}")
+        env = load_dotenv()
+        if env.get('COUNTRY_CODE'):
+            network.country(env['COUNTRY_CODE'])
+        if env.get('HOSTNAME'):
+            network.hostname(env['HOSTNAME'])
 
-    # MAC Settings
-    wlan = network.WLAN(network.STA_IF)
-    if env.get('MAC', None):
-        wlan_mac(wlan, env.get('MAC'))
-        print(f"MAC is {mac_format(wlan.config('mac').hex())}")
-    wlan.active(True)  # Activate the interface
-    if wlan_connect(wlan, ssid=env.get('SSID'), ipsk=env.get('IPSK')):
-        print("✅ ESP32-C6 is successfully connected to the internet.")
-        ntp_sync()
-        blink(20, 100)  # Fast blink LED if OK
-    else:
-        # Optionally, put the device into a low-power state or retry machine.reset()
-        print("❌ Could not establish WiFi connection. Please check credentials and try again.")
-        blink(20, 500)  # Slow blink LED if not OK
+        wlan = network.WLAN(network.STA_IF)
+        wlan.active(True)
+        if env.get('MAC'):
+            wlan_mac(wlan, env['MAC'])
+        mac = mac_format(wlan.config('mac').hex())
 
+        if display is not None:
+            show_status(display, connected=False, ssid=env.get('SSID'), ipsk=env.get('IPSK'),
+                        mac=mac, message="Connecting...")
+        connected = connect(wlan, env.get('SSID'), env.get('IPSK'))
+        if display is not None:
+            show_status(display, connected, env.get('SSID'), env.get('IPSK'), mac)
+        if connected:
+            signal_connected()
+        return wlan, env, mac, connected
+    except Exception as e:
+        with open("crash.log", "w") as f:
+            sys.print_exception(e, f)
+        raise
+
+
+def connect(wlan, ssid: str, ipsk: str) -> bool:
+    """
+    Connects (or confirms connection) to a WiFi network. Retries once through
+    the "Wifi Internal Error" OSError that wlan.connect() can raise when the
+    driver's internal state hasn't settled yet right after activation.
+    Args:
+        wlan (network.WLAN): the WLAN interface, already wlan.active(True)
+        ssid (str): network SSID
+        ipsk (str): [identity] pre-shared key
+    Returns:
+        bool: True if connected, False if every attempt failed
+    """
+    if wlan.isconnected():
+        return True
+
+    for attempt in range(2):
+        try:
+            wlan.connect(ssid, ipsk)
+        except OSError as e:
+            print(f"wlan.connect() raised {e}, resetting WiFi interface")
+            wlan.active(False)
+            time.sleep_ms(200)
+            wlan.active(True)
+            continue
+
+        attempt_start = time.ticks_ms()
+        while time.ticks_diff(time.ticks_ms(), attempt_start) < ATTEMPT_TIMEOUT_MS:
+            if wlan.isconnected():
+                return True
+            time.sleep_ms(POLL_MS)
+
+        print(f"WiFi failed to connect, status={wlan.status()}")
+        wlan.active(False)
+        time.sleep_ms(200)
+        wlan.active(True)
+
+    return False
